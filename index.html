@@ -298,7 +298,7 @@ const IC = {
 const I = n => IC[n] || IC.dot;
 const GOLD = new Set(['victory', 'crown']);
 function fmtT(s) { s = Math.max(0, s || 0); return Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0'); }
-function fmtMB(b) { return b >= 1e9 ? (b / 1e9).toFixed(1).replace('.', ',') + ' GB' : Math.max(1, Math.round(b / 1e6)) + ' MB'; }
+function fmtMB(b) { return b >= 1e9 ? (b / 1e9).toFixed(1).replace('.', ',') + ' GB' : (b > 0 ? Math.max(1, Math.round(b / 1e6)) : 0) + ' MB'; }
 function fmtDate(ts) {
   const d = new Date(ts), n = new Date(), y = new Date(n); y.setDate(n.getDate() - 1);
   const hm = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
@@ -360,8 +360,19 @@ async function loadThumbs(root) {
   });
 }
 // download the phone version (stored in ~900-KB pieces in Firestore)
-async function downloadClip(c, onP) {
-  if (blobCache.has(c.id)) return blobCache.get(c.id);
+const inflight = new Map();
+function downloadClip(c, onP) {
+  if (blobCache.has(c.id)) { onP && onP(1); return Promise.resolve(blobCache.get(c.id)); }
+  let job = inflight.get(c.id);
+  if (!job) {
+    job = { ls: new Set(), p: 0 };
+    job.promise = fetchClip(c, p => { job.p = p; job.ls.forEach(f => f(p)); }).finally(() => inflight.delete(c.id));
+    inflight.set(c.id, job);
+  }
+  if (onP) { job.ls.add(onP); onP(job.p); }
+  return job.promise;
+}
+async function fetchClip(c, onP) {
   let blob;
   if (c.videoUrl) { // demo / old format
     const r = await fetch(c.videoUrl); if (!r.ok) throw new Error('Download fehlgeschlagen'); blob = await r.blob();
@@ -527,6 +538,7 @@ function openClip(c, local) {
       <div class="acts">
         ${local ? `<button class="btn" id="unsave">${I('trash')}Entfernen</button>` : `<button class="btn prog" id="save"><div class="bar" style="width:0"></div><span>${isSaved ? I('saved') + 'Gesichert' : I('save') + 'Sichern'}</span></button>`}
         <button class="btn primary prog" id="photos"><div class="bar" style="width:0"></div><span>${I('photos')}In Fotos</span></button>
+        ${local ? '' : `<button class="btn wide" id="cdel">${I('trash')}Aus der Cloud löschen</button>`}
       </div>
       <div class="note"><b>Sichern</b> behält den Clip in der App, auch wenn er aus der Cloud gelöscht wird. <b>In Fotos</b> öffnet das Teilen-Menü – dort „Video sichern“ tippen.</div>
     </div></div>`;
@@ -578,6 +590,7 @@ function openClip(c, local) {
   const sv = $('#save');
   if (sv) sv.onclick = async () => {
     if (saved.find(s => s.id === c.id)) return toast('Schon gesichert');
+    if (sv.disabled) return;
     sv.disabled = true;
     try {
       const blob = await getBlob(sv);
@@ -593,6 +606,22 @@ function openClip(c, local) {
   if (un) un.onclick = async () => {
     if (!un.dataset.sure) { un.dataset.sure = 1; un.innerHTML = I('trash') + 'Wirklich?'; return; }
     await idb.del(c.id); await loadSaved(); render(); sh.classList.remove('on'); toast('Entfernt');
+  };
+  const cd = $('#cdel');
+  if (cd) cd.onclick = async () => {
+    if (!cd.dataset.sure) { cd.dataset.sure = 1; cd.innerHTML = I('trash') + 'Wirklich löschen? Nochmal tippen'; setTimeout(() => { if (cd.isConnected) { delete cd.dataset.sure; cd.innerHTML = I('trash') + 'Aus der Cloud löschen'; } }, 3500); return; }
+    if (!FB) return toast('Im Demo-Modus nicht möglich');
+    cd.disabled = true; cd.innerHTML = '<div class="spin"></div>';
+    try {
+      const F = FB.F, base = ['users', FB.uid];
+      const refs = [];
+      for (let i = 0; i < (c.parts || 0); i++) refs.push(F.doc(FB.db, ...base, 'clips', c.id, 'parts', pad(i)));
+      refs.push(F.doc(FB.db, ...base, 'thumbs', c.id), F.doc(FB.db, ...base, 'clips', c.id));
+      for (let k = 0; k < refs.length; k += 400) { const b = F.writeBatch(FB.db); refs.slice(k, k + 400).forEach(r => b.delete(r)); await b.commit(); }
+      try { await F.updateDoc(F.doc(FB.db, ...base, 'meta', 'cloud'), { usedBytes: F.increment(-(c.bytes || 0)), count: F.increment(-1) }); } catch {}
+      blobCache.delete(c.id); v.pause(); sh.classList.remove('on');
+      toast(saved.find(x => x.id === c.id) ? 'Aus der Cloud gelöscht – gesichert bleibt er hier' : 'Aus der Cloud gelöscht (auf dem PC bleibt er)');
+    } catch (e) { cd.disabled = false; cd.innerHTML = I('trash') + 'Aus der Cloud löschen'; toast('Löschen fehlgeschlagen: ' + (e.code || e.message)); }
   };
   const ph = $('#photos');
   ph.onclick = async () => {
