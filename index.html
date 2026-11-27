@@ -92,6 +92,8 @@ video { width: 100%; max-height: 52vh; display: block; background: #000; }
 .vload { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(0,0,0,.55); font-weight: 650; font-size: 14px; }
 .vload .ring2 { width: 64px; height: 64px; }
 .vload .ring2 svg { width: 64px; height: 64px; transform: rotate(-90deg); }
+.bufline { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255,255,255,.08); }
+.bufline i { display: block; height: 100%; width: 0; background: rgba(255,255,255,.65); box-shadow: 0 0 8px #fff; transition: width .3s; }
 .flash { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 7px 14px 7px 8px; border-radius: 18px; background: rgba(10,10,12,.72); border: 1px solid rgba(255,255,255,.25); font-weight: 650; font-size: 13px; opacity: 0; transition: .3s; pointer-events: none; white-space: nowrap; }
 .flash.on { opacity: 1; top: 18px; }
 .flash i { width: 24px; height: 24px; border-radius: 50%; background: #fff; color: #000; display: grid; place-items: center; } .flash i svg { width: 13px; height: 13px; }
@@ -132,6 +134,14 @@ video { width: 100%; max-height: 52vh; display: block; background: #000; }
 .spin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25); border-top-color: #fff; animation: rot .8s linear infinite; }
 @keyframes rot { to { transform: rotate(360deg); } }
 [hidden] { display: none !important; }
+/* Tab-Leiste: immer komplett im Bildschirm */
+.tabs { width: min(calc(100% - 24px), 460px); display: grid !important; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 5px !important; box-sizing: border-box; }
+.tabs button { width: 100%; min-width: 0 !important; height: 52px !important; padding: 0 6px !important; gap: 6px !important; font-size: 13px !important; overflow: hidden; white-space: nowrap; }
+.tabs button span { overflow: hidden; text-overflow: ellipsis; }
+.tabs button svg { flex: none; width: 18px !important; height: 18px !important; }
+.tabs button em { flex: none; }
+@media (max-width: 400px) { .tabs button em { display: none; } .tabs button { font-size: 12.5px !important; } }
+@media (max-width: 340px) { .tabs button span { display: none; } }
 /* layout: phone = bottom tabs, tablet = sidebar like the PC app */
 .app { flex-direction: row; }
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
@@ -238,7 +248,7 @@ video { width: 100%; max-height: 52vh; display: block; background: #000; }
     </div>
     <div class="scroll" id="scroll"></div>
   </main>
-  <nav class="tabs glass"><button data-tab="clips" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="3.5"/><path d="M10 9.2v5.6l4.6-2.8z" fill="currentColor" stroke="none"/></svg><span>Clips</span><em data-n="clips">0</em></button><button data-tab="saved" class=""><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3.5h12v17l-6-4-6 4z"/></svg><span>Gesichert</span><em data-n="saved">0</em></button><button data-tab="settings" class=""><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2L5.5 5.5"/></svg><span>Einstellungen</span></button></nav>
+  <nav class="tabs glass"><button data-tab="clips" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="3.5"/><path d="M10 9.2v5.6l4.6-2.8z" fill="currentColor" stroke="none"/></svg><span>Clips</span><em data-n="clips">0</em></button><button data-tab="saved" class=""><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3.5h12v17l-6-4-6 4z"/></svg><span>Gesichert</span><em data-n="saved">0</em></button><button data-tab="settings" class=""><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2L5.5 5.5"/></svg><span>Optionen</span></button></nav>
 </div>
 
 <div class="splash" id="splash">
@@ -360,44 +370,84 @@ async function loadThumbs(root) {
   });
 }
 // download the phone version (stored in ~900-KB pieces in Firestore)
-const inflight = new Map();
+// ---------- Clip-Download (Stücke der Reihe nach, mehrere parallel) ----------
+const jobs = new Map();
+function partJob(c) {
+  let j = jobs.get(c.id);
+  if (j && !j.aborted) return j;
+  const n = c.parts || 0;
+  j = { id: c.id, n, done: 0, users: 0, aborted: false, ls: new Set(), parts: [], res: [], rej: [] };
+  for (let i = 0; i < n; i++) j.parts[i] = new Promise((r, x) => { j.res[i] = r; j.rej[i] = x; });
+  j.parts.forEach(p => p.catch(() => {}));
+  let next = 0;
+  const worker = async () => {
+    while (next < n && !j.aborted) {
+      const i = next++;
+      let d, err;
+      for (let t = 0; t < 4 && !d && !j.aborted; t++) {
+        try { d = await FB.F.getDocFromServer(FB.F.doc(FB.db, 'users', FB.uid, 'clips', c.id, 'parts', pad(i))); }
+        catch (e) { err = e; await new Promise(r => setTimeout(r, 700 * (t + 1))); }
+      }
+      if (j.aborted) return;
+      if (!d) { const e = new Error(err && err.code === 'permission-denied' ? 'Keine Berechtigung – Firestore-Regeln prüfen' : 'Laden fehlgeschlagen: ' + ((err && (err.code || err.message)) || 'unbekannt')); j.rej.forEach(f => f(e)); j.aborted = true; jobs.delete(c.id); return; }
+      if (!d.exists()) { const e = new Error('Clip ist nicht mehr in der Cloud'); j.rej.forEach(f => f(e)); j.aborted = true; jobs.delete(c.id); return; }
+      j.res[i](d.data().data.toUint8Array());
+      j.done++; const p = j.done / n; j.ls.forEach(f => f(p));
+    }
+  };
+  for (let k = 0; k < Math.min(4, n); k++) worker();
+  jobs.set(c.id, j);
+  return j;
+}
+function hold(j) { j.users++; return () => { j.users--; setTimeout(() => { if (j.users <= 0 && j.done < j.n) { j.aborted = true; jobs.delete(j.id); } }, 400); }; }
+
 function downloadClip(c, onP) {
   if (blobCache.has(c.id)) { onP && onP(1); return Promise.resolve(blobCache.get(c.id)); }
-  let job = inflight.get(c.id);
-  if (!job) {
-    job = { ls: new Set(), p: 0 };
-    job.promise = fetchClip(c, p => { job.p = p; job.ls.forEach(f => f(p)); }).finally(() => inflight.delete(c.id));
-    inflight.set(c.id, job);
-  }
-  if (onP) { job.ls.add(onP); onP(job.p); }
-  return job.promise;
+  if (c.videoUrl) return fetch(c.videoUrl).then(r => { if (!r.ok) throw new Error('Download fehlgeschlagen'); return r.blob(); }).then(b => { cacheBlob(c.id, b); onP && onP(1); return b; });
+  if (!c.parts) return Promise.reject(new Error('Dieser Clip hat kein Handy-Video (alte Version) – am PC „Aufs Handy laden“ drücken'));
+  const j = partJob(c), release = hold(j);
+  if (onP) { j.ls.add(onP); onP(j.done / j.n); }
+  return Promise.all(j.parts).then(arr => { const b = new Blob(arr, { type: 'video/mp4' }); cacheBlob(c.id, b); return b; })
+    .finally(() => { if (onP) j.ls.delete(onP); release(); });
 }
-async function fetchClip(c, onP) {
-  let blob;
-  if (c.videoUrl) { // demo / old format
-    const r = await fetch(c.videoUrl); if (!r.ok) throw new Error('Download fehlgeschlagen'); blob = await r.blob();
-  } else {
-    const n = c.parts || 0, out = new Array(n); let done = 0;
-    if (!n) throw new Error('Dieser Clip hat kein Handy-Video (alte Version) – am PC „Aufs Handy laden“ drücken');
-    const idx = [...Array(n).keys()];
-    await Promise.all(Array.from({ length: Math.min(6, n) }, async () => {
-      while (idx.length) {
-        const i = idx.shift();
-        let d, err;
-        for (let t = 0; t < 3 && !d; t++) {
-          try { d = await FB.F.getDocFromServer(FB.F.doc(FB.db, 'users', FB.uid, 'clips', c.id, 'parts', pad(i))); }
-          catch (e) { err = e; await new Promise(r => setTimeout(r, 800 * (t + 1))); }
-        }
-        if (!d) throw new Error(err && err.code === 'permission-denied' ? 'Keine Berechtigung – Firestore-Regeln prüfen' : 'Laden fehlgeschlagen: ' + ((err && (err.code || err.message)) || 'unbekannt'));
-        if (!d.exists()) throw new Error('Clip ist nicht mehr in der Cloud');
-        out[i] = d.data().data.toUint8Array(); done++; onP && onP(done / n);
+function cacheBlob(id, b) { blobCache.set(id, b); if (blobCache.size > 3) blobCache.delete(blobCache.keys().next().value); }
+
+// Sofort abspielen: neue Clips sind als fragmentiertes MP4 gespeichert → MediaSource
+function canStream(c) {
+  const MS = window.ManagedMediaSource || window.MediaSource;
+  return !!(c.frag && c.parts && MS && MS.isTypeSupported(c.codec || 'video/mp4; codecs="avc1.4D401F, mp4a.40.2"'));
+}
+async function streamClip(c, v, onP, alive) {
+  const MS = window.ManagedMediaSource || window.MediaSource;
+  const mime = c.codec || 'video/mp4; codecs="avc1.4D401F, mp4a.40.2"';
+  const ms = new MS();
+  v.disableRemotePlayback = true;
+  const url = URL.createObjectURL(ms); v.src = url;
+  await new Promise(r => ms.addEventListener('sourceopen', r, { once: true }));
+  const sb = ms.addSourceBuffer(mime);
+  const append = buf => new Promise((res, rej) => {
+    const ok = () => { sb.removeEventListener('error', bad); res(); };
+    const bad = () => { sb.removeEventListener('updateend', ok); rej(new Error('Abspielen fehlgeschlagen')); };
+    sb.addEventListener('updateend', ok, { once: true }); sb.addEventListener('error', bad, { once: true });
+    sb.appendBuffer(buf);
+  });
+  const j = partJob(c), release = hold(j);
+  if (onP) { j.ls.add(onP); onP(j.done / j.n); }
+  try {
+    for (let i = 0; i < j.n; i++) {
+      const buf = await j.parts[i];
+      if (!alive()) return { url, stopped: true };
+      try { await append(buf); }
+      catch (e) {
+        if (e && e.name === 'QuotaExceededError') break; // Puffer voll → Rest kommt beim Download dazu
+        throw e;
       }
-    }));
-    blob = new Blob(out, { type: 'video/mp4' });
-  }
-  blobCache.set(c.id, blob);
-  if (blobCache.size > 3) blobCache.delete(blobCache.keys().next().value);
-  return blob;
+      if (i === 0) onP && onP(j.done / j.n, true); // erstes Stück da → abspielen
+    }
+    if (ms.readyState === 'open') ms.endOfStream();
+    Promise.all(j.parts).then(arr => cacheBlob(c.id, new Blob(arr, { type: 'video/mp4' }))).catch(() => {});
+    return { url };
+  } finally { if (onP) j.ls.delete(onP); release(); }
 }
 
 function soonDeleted() {
@@ -528,7 +578,7 @@ function openClip(c, local) {
   const isSaved = !!saved.find(s => s.id === c.id);
   sh.innerHTML = `<div class="sh-inner" style="display:flex;flex-direction:column;flex:1;min-height:0">
     <div class="sh-top"><button class="xb" id="shx">${I('close')}</button><div class="tt"><b>${esc(c.title)}</b><span>${esc(c.game || '')}${c.game ? ' · ' : ''}${fmtDate(c.created)}</span></div></div>
-    <div class="vwrap"><video id="v" ${src ? `src="${esc(src)}"` : ''} playsinline webkit-playsinline preload="metadata"></video>${src ? '' : `<div class="vload" id="vl"><div class="ring2"><svg viewBox="0 0 64 64" style="transform:rotate(-90deg)"><circle cx="32" cy="32" r="28" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="3.5"/><circle id="vlc" cx="32" cy="32" r="28" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="175.9" stroke-dashoffset="175.9" style="filter:drop-shadow(0 0 6px #fff);transition:stroke-dashoffset .2s"/></svg><img class="lg" src="${LOGO}"></div><span class="lt" id="vlt">Clip wird geladen</span><span class="ls" id="vls">0 %</span></div>`}<div class="flash" id="fl"><i></i><span></span></div></div>
+    <div class="vwrap"><video id="v" ${src ? `src="${esc(src)}"` : ''} playsinline webkit-playsinline preload="metadata"></video>${src ? '' : `<div class="vload" id="vl"><div class="ring2"><svg viewBox="0 0 64 64" style="transform:rotate(-90deg)"><circle cx="32" cy="32" r="28" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="3.5"/><circle id="vlc" cx="32" cy="32" r="28" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="175.9" stroke-dashoffset="175.9" style="filter:drop-shadow(0 0 6px #fff);transition:stroke-dashoffset .2s"/></svg><img class="lg" src="${LOGO}"></div><span class="lt" id="vlt">Clip wird geladen</span><span class="ls" id="vls">0 %</span></div>`}<div class="flash" id="fl"><i></i><span></span></div><div class="bufline"><i id="bufbar"></i></div></div>
     <div class="sh-body">
       <div class="ctl"><button class="pp" id="pp">${I('play')}</button><div class="time"><b id="tc">0:00</b> / ${fmtT(c.duration)}</div></div>
       <div class="track" id="tk"><div class="rail"><div class="fill" id="fi"></div></div>
@@ -544,21 +594,35 @@ function openClip(c, local) {
     </div></div>`;
   requestAnimationFrame(() => sh.classList.add('on'));
   const v = $('#v'), tk = $('#tk');
+  const token = (window._openTok = (window._openTok || 0) + 1);
+  const alive = () => window._openTok === token && sh.classList.contains('on');
   (async () => {
-    const pu = local ? local.thumbUrl : await thumbFor(c); if (pu) v.poster = pu;
-    if (!local) {
-      try {
-        const tot = c.videoBytes || 0;
-        const b = await downloadClip(c, p => { const e = $('#vlc'); if (e) e.style.strokeDashoffset = 175.9 * (1 - p); const t = $('#vls'); if (t) t.textContent = Math.round(p * 100) + ' %' + (tot ? ' · ' + fmtMB(tot * p) + ' von ' + fmtMB(tot) : ''); });
-        if (!sh.classList.contains('on')) return;
-        objUrl = URL.createObjectURL(b); v.src = objUrl; v.muted = PREF.get('muted', false); v.load(); if (PREF.get('autoplay', true)) v.play().catch(() => {}); const l = $('#vl'); if (l) l.remove();
-        v.onerror = () => { const t = document.createElement('div'); t.className = 'vload'; t.innerHTML = '<div style="text-align:center;padding:0 24px">Video kann nicht abgespielt werden</div>'; v.parentNode.appendChild(t); };
-      } catch (e) {
-        const l = $('#vl'); if (!l) return;
-        l.innerHTML = `<div style="text-align:center;padding:0 24px;line-height:1.5">${esc(e.message || e)}</div><button class="btn" id="vretry">Nochmal versuchen</button>`;
-        $('#vretry').onclick = () => openClip(c, null);
+    const pu = local ? local.thumbUrl : await thumbFor(c); if (pu && alive()) v.poster = pu;
+    if (local) return;
+    const tot = c.videoBytes || 0;
+    const showP = p => { if (!alive()) return; const e = $('#vlc'); if (e) e.style.strokeDashoffset = 175.9 * (1 - p); const t = $('#vls'); if (t) t.textContent = Math.round(p * 100) + ' %' + (tot ? ' · ' + fmtMB(tot * p) + ' von ' + fmtMB(tot) : ''); };
+    const startPlay = () => { if (!alive()) return; const l = $('#vl'); if (l) l.remove(); v.muted = PREF.get('muted', false); if (PREF.get('autoplay', true)) v.play().catch(() => {}); };
+    const fail = e => {
+      if (!alive()) return;
+      let l = $('#vl'); if (!l) { l = document.createElement('div'); l.className = 'vload'; l.id = 'vl'; v.parentNode.appendChild(l); }
+      l.innerHTML = `<div style="text-align:center;padding:0 24px;line-height:1.5">${esc(e.message || e)}</div><button class="btn" id="vretry">Nochmal versuchen</button>`;
+      $('#vretry').onclick = () => openClip(c, null);
+    };
+    try {
+      if (blobCache.has(c.id)) { objUrl = URL.createObjectURL(blobCache.get(c.id)); v.src = objUrl; startPlay(); return; }
+      if (canStream(c)) {
+        let started = false;
+        // kleiner Fortschrittsbalken unter dem Video, solange noch nachgeladen wird
+        const r = await streamClip(c, v, (p, first) => { showP(p); if (first && !started) { started = true; startPlay(); } const bb = $('#bufbar'); if (bb) bb.style.width = (p * 100) + '%'; }, alive);
+        objUrl = r.url;
+        if (!started && alive()) startPlay();
+      } else {
+        const b = await downloadClip(c, showP);
+        if (!alive()) return;
+        objUrl = URL.createObjectURL(b); v.src = objUrl; v.load(); startPlay();
       }
-    }
+      v.onerror = () => fail(new Error('Video kann nicht abgespielt werden'));
+    } catch (e) { fail(e); }
   })();
   const dur = () => (isFinite(v.duration) && v.duration > 0 ? v.duration : c.duration);
   const seek = t => { v.currentTime = Math.max(0, Math.min(dur() - .05, t)); };
